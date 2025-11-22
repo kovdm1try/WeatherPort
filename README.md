@@ -1,7 +1,4 @@
 # WeatherPort
-
-# ChildParentProcesses
-
 ## Задание
 
 ```
