@@ -15,6 +15,9 @@
 ## Структура проекта
 ```
 WeatherPort/
+├── lib/                 # Папка библиотеки
+│   ├── SerialPort.h     # Заголовочный файл класса для работы с SerialPort
+│   └── SerialPort.cpp   # Код класса SerialPort
 ├── sender.py            # Программа Python эмулирующая устройство для определения температуры
 ├── main.cpp             # Программа C++
 ├── CMakeLists.txt       # Файл для сборки проекта с помощью CMake
@@ -51,4 +54,39 @@ options:
   --baudrate BAUDRATE  Скорость порта(по умолчанию 9600)
   --city CITY          Город для получения температуры(по умолчанию Vladivostok)
   --interval INTERVAL  Интервал между обновлениями в секундах (по умолчанию 10)
+```
+
+## Запуск логера
+```bash
+# Сборка проекта
+mkdir -p build
+cd build
+cmake ..
+cmake --build .
+
+# Запуск
+./logger /dev/ttys002(порт) 9600(скорость)
+```
+
+## Запуск проекта целиком
+1) Запуск виртуальных портов(Если на POSIX)
+```bash
+socat -d -d pty,raw,echo=0 pty,raw,echo=0
+```
+
+2) Запуск sender для получения температуры
+```bash
+source .venv/bin/activate
+python sender.py --interval 30 --port /dev/ttys003 --city Vladivostok # Пример аргументов
+```
+
+3) Запуск логера
+```bash
+mkdir -p build
+cd build
+cmake ..
+cmake --build .
+
+# Запуск (Если через socat, то пишем второй, отличный от sender'а порт)
+./logger /dev/ttys002 9600
 ```

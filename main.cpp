@@ -1,12 +1,14 @@
 #include <bits/stdc++.h>
 
+#include "libs/SerialPort.h"
+
 #ifdef _WIN32
     #include <windows.h>
 #else
-    #include <fcntl.h>
-    #include <unistd.h>
-    #include <termios.h>
-    #include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#include <termios.h>
+#include <cerrno>
 #endif
 
 using namespace std;
@@ -29,11 +31,11 @@ string TimePoint2Sting(const chrono::system_clock::time_point tp) {
     // Structure holding a calendar date and time broken down into its components(https://en.cppreference.com/w/c/chrono/tm)
     tm tm{};
 
-    #ifdef _WIN32
+#ifdef _WIN32
         localtime_s(&tm, &t);
-    #else
-        localtime_r(&t, &tm);
-    #endif
+#else
+    localtime_r(&t, &tm);
+#endif
 
     // Собираем строку DD:MM:YYYY HH:MM в поток ss с помощью метода put_time
     ostringstream oss;
@@ -49,7 +51,7 @@ params:
  return:
     bool: True если получилось распарсить, False - если не получилось
  */
-bool String2TimePoint(const string& date, chrono::system_clock::time_point &tp) {
+bool String2TimePoint(const string &date, chrono::system_clock::time_point &tp) {
     tm tm{};
     istringstream iss(date);
 
@@ -74,7 +76,7 @@ params:
 return:
     bool: True если получилось распарсить, False - если не получилось
  */
-bool parseLogLine(const string& line, TimeTemp &tt) {
+bool parseLogLine(const string &line, TimeTemp &tt) {
     const auto sep_pos = line.find('|');
 
     // нет разделителя
@@ -102,6 +104,45 @@ bool parseLogLine(const string& line, TimeTemp &tt) {
     }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        cerr << "Incorrect arguments number" << endl;
+        cerr << "Usage example\n" <<
+                "Windows " << argv[0] << " COM4 9600\n" <<
+                "POSIX " << argv[0] << " dev/ttys003 9600\n";
+        return 1;
+    }
+
+    const string PORT = argv[1];
+    // Скорости в этом скрипте и запущенном симмуляторе python должны совпадать
+    const int BAUD = atoi(argv[2]);
+
+    try {
+        SerialPort port(PORT, BAUD);
+        cerr << "Opened port: " << PORT << " @ " << BAUD << "\n";
+
+        while (true) {
+            string line;
+
+            if (!port.readline(line)) continue;
+            if (line.empty()) continue;
+
+            try {
+                double temp = stod(line);
+
+                TimeTemp tt;
+                tt.time = chrono::system_clock::now();
+                tt.temp = temp;
+
+                cerr << "Read from port tempreture: " << temp << " C\n";
+            } catch (...) {
+                cerr << "Invalid format line: '" << line << "'\n";
+            }
+        }
+
+    } catch (const exception &e) {
+        cerr << e.what() << endl;
+        return 1;
+    }
     return 0;
 }
