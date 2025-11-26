@@ -104,6 +104,174 @@ bool parseLogLine(const string &line, TimeTemp &tt) {
     }
 }
 
+void appendRotate(const string& file_path,
+                  const TimeTemp& current,
+                  const chrono::hours& max_age)
+{
+/*
+appendRotate
+  Добавление записи в логи через промежуток времени.
+params:
+  file_path — путь к лог-файлу
+  current   — новая запись
+  max_age   — максимальный возраст записей (в часах),
+              всё что старше — выкидывается
+return:
+    void
+*/
+    vector<TimeTemp> keep; // то что оставляем
+    const auto now = chrono::system_clock::now();
+    const auto min_time = now - max_age;
+
+    // Читаем старый лог, оставляем только то что попадает в диапозон
+    ifstream fin(file_path);
+    if (fin) {
+        string line;
+        while (getline(fin, line)) {
+            TimeTemp tt;
+            if (!parseLogLine(line, tt)) continue;
+            if (tt.time >= min_time) {
+                keep.push_back(tt);
+            }
+        }
+    }
+
+    keep.push_back(current);
+
+    // перезаписываем файл
+    ofstream fout(file_path, ios::trunc);
+    for (const auto& tt : keep) {
+        fout << TimePoint2Sting(tt.time) << '|' << tt.temp << '\n';
+    }
+}
+
+// Средние дневные логи, хранятся год
+void appendKeepCurrentYear(const string& file_path, const TimeTemp& current) {
+    vector<TimeTemp> keep;
+
+    // Текущий год
+    const auto now = chrono::system_clock::now();
+    time_t t_now = chrono::system_clock::to_time_t(now);
+    tm tm_now{};
+    #ifdef _WIN32
+        localtime_s(&tm_now, &t_now);
+    #else
+        localtime_r(&t_now, &tm_now);
+    #endif
+    const int cur_year = tm_now.tm_year + 1900;
+
+    // Читаем старые записи и оставляем только за текщий год
+    ifstream fin(file_path);
+    if (fin) {
+        string line;
+        while (getline(fin, line)) {
+            TimeTemp tt;
+            if (!parseLogLine(line, tt)) continue;
+
+            time_t t = chrono::system_clock::to_time_t(tt.time);
+            tm tm_entry{};
+    #ifdef _WIN32
+                localtime_s(&tm_entry, &t);
+    #else
+                localtime_r(&t, &tm_entry);
+    #endif
+            const int y = tm_entry.tm_year + 1900;
+            if (y == cur_year) {
+                keep.push_back(tt);
+            }
+        }
+    }
+
+    keep.push_back(current);
+
+    // Перезаписываем файл
+    ofstream fout(file_path, ios::trunc);
+    for (const auto& tt : keep) {
+        fout << TimePoint2Sting(tt.time) << '|' << tt.temp << '\n';
+    }
+}
+
+// Агрегатор средних значений
+struct MeanAgg {
+    long long hour_key = -1; // к какому часу приндлежат измерения
+    double hour_sum = 0.0; // сумма температуры
+    long long hour_cnt = 0; // количество измерений
+
+    long long day_key  = -1; // к какому дню принадлежат измерения
+    double day_sum  = 0.0; // сумма температуры
+    long long day_cnt  = 0; // количесво измерений
+
+    // Считаем ключ дня: YYYYMMDD
+    static long long dayKey(const tm& tm_time) {
+        return (tm_time.tm_year + 1900) * 10000LL
+             + (tm_time.tm_mon + 1)   * 100LL
+             + tm_time.tm_mday;
+    }
+
+    // Считаем ключ часа: YYYYMMDDHH
+    static long long hourKey(const tm& tm_time) {
+        return dayKey(tm_time) * 100LL + tm_time.tm_hour;
+    }
+
+    // Добавляем одно измерение и при необходимости
+    // пишем средние значения за завершившийся час / день
+    void add(const TimeTemp& tt) {
+        using namespace chrono;
+
+        // Переводим время измерения в локальное tm
+        time_t t = system_clock::to_time_t(tt.time);
+        tm tm_entry{};
+        #ifdef _WIN32
+            localtime_s(&tm_entry, &t);
+        #else
+            localtime_r(&t, &tm_entry);
+        #endif
+
+        const long long cur_day  = dayKey(tm_entry);
+        const long long cur_hour = hourKey(tm_entry);
+
+        // первое измерение часа
+        if (hour_key == -1) {
+            hour_key = cur_hour;
+        } else if (cur_hour != hour_key && hour_cnt > 0) {
+            // при смене часа считаем среднее за час
+            TimeTemp hour_mean;
+            hour_mean.time = tt.time;
+            hour_mean.temp = hour_sum / hour_cnt;
+
+            // Пишем в лог средних по часу, храним только последний месяц
+            appendRotate(TEMP_HOURLY_LOG, hour_mean, chrono::hours(24 * 30));
+
+            hour_key = cur_hour;
+            hour_sum = 0.0;
+            hour_cnt = 0;
+        }
+
+        // по аналогии делаем измерения дня
+        if (day_key == -1) {
+            day_key = cur_day;
+        } else if (cur_day != day_key && day_cnt > 0) {
+            TimeTemp day_mean;
+            day_mean.time = tt.time;
+            day_mean.temp = day_sum / day_cnt;
+
+            appendKeepCurrentYear(TEMP_DAILY_LOG, day_mean);
+
+            day_key = cur_day;
+            day_sum = 0.0;
+            day_cnt = 0;
+        }
+
+        // накапоиваем значение
+        hour_sum += tt.temp;
+        hour_cnt++;
+
+        day_sum += tt.temp;
+        day_cnt++;
+    }
+};
+
+
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         cerr << "Incorrect arguments number" << endl;
@@ -117,8 +285,14 @@ int main(int argc, char *argv[]) {
     // Скорости в этом скрипте и запущенном симмуляторе python должны совпадать
     const int BAUD = atoi(argv[2]);
 
+    // создание папки длля логов
+    std::error_code ec;
+    std::filesystem::create_directories("log", ec);
+
     try {
         SerialPort port(PORT, BAUD);
+        MeanAgg ma;
+
         cerr << "Opened port: " << PORT << " @ " << BAUD << "\n";
 
         while (true) {
@@ -133,6 +307,9 @@ int main(int argc, char *argv[]) {
                 TimeTemp tt;
                 tt.time = chrono::system_clock::now();
                 tt.temp = temp;
+
+                appendRotate(TEMP_LOG, tt, chrono::hours(24));
+                ma.add(tt);
 
                 cerr << "Read from port tempreture: " << temp << " C\n";
             } catch (...) {
