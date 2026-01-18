@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WeatherPort</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>WeatherPort</h1>
+
+        <div class="current-temp">
+            <h2>Текущая температура</h2>
+            <div class="temperature" id="currentTemp">--</div>
+            <div class="last-update" id="lastUpdate">Загрузка...</div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Минимум (24ч)</h3>
+                <div class="stat-value min" id="minTemp">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>Максимум (24ч)</h3>
+                <div class="stat-value max" id="maxTemp">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>Среднее (24ч)</h3>
+                <div class="stat-value avg" id="avgTemp">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>Измерений</h3>
+                <div class="stat-value count" id="countMeasurements">--</div>
+            </div>
+        </div>
+
+        <div class="charts-container">
+            <div class="chart-card">
+                <h3>Измерения за 24 часа</h3>
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="loadMeasurements(1)">1 час</button>
+                    <button class="tab-btn" onclick="loadMeasurements(6)">6 часов</button>
+                    <button class="tab-btn" onclick="loadMeasurements(12)">12 часов</button>
+                    <button class="tab-btn" onclick="loadMeasurements(24)">24 часа</button>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="measurementsChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <h3>Почасовая статистика</h3>
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="loadHourly(1)">1 день</button>
+                    <button class="tab-btn" onclick="loadHourly(7)">7 дней</button>
+                    <button class="tab-btn" onclick="loadHourly(14)">14 дней</button>
+                    <button class="tab-btn" onclick="loadHourly(30)">30 дней</button>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="hourlyChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <h3>Дневная статистика</h3>
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="loadDaily(7)">7 дней</button>
+                    <button class="tab-btn" onclick="loadDaily(30)">30 дней</button>
+                    <button class="tab-btn" onclick="loadDaily(90)">90 дней</button>
+                    <button class="tab-btn" onclick="loadDaily(365)">Год</button>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="dailyChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <h3>Последние измерения</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Время</th>
+                        <th>Температура</th>
+                    </tr>
+                </thead>
+                <tbody id="measurementsTable">
+                    <tr><td colspan="2" class="loading">Загрузка...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
