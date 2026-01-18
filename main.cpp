@@ -1,14 +1,21 @@
-#include <bits/stdc++.h>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <chrono>
+#include <iomanip>
+#include <ctime>
+#include <filesystem>
+#include <stdexcept>
+#include <csignal>
+#include <clocale>
+#include <cstdlib>
 
 #include "libs/SerialPort.h"
 
 #ifdef _WIN32
     #include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#include <termios.h>
-#include <cerrno>
 #endif
 
 using namespace std;
@@ -193,13 +200,15 @@ void appendKeepCurrentYear(const string& file_path, const TimeTemp& current) {
 
 // Агрегатор средних значений
 struct MeanAgg {
-    long long hour_key = -1; // к какому часу приндлежат измерения
+    long long hour_key = -1; // к какому часу принадлежат измерения
     double hour_sum = 0.0; // сумма температуры
     long long hour_cnt = 0; // количество измерений
+    chrono::system_clock::time_point hour_start_time; // время начала текущего часа
 
     long long day_key  = -1; // к какому дню принадлежат измерения
     double day_sum  = 0.0; // сумма температуры
-    long long day_cnt  = 0; // количесво измерений
+    long long day_cnt  = 0; // количество измерений
+    chrono::system_clock::time_point day_start_time; // время начала текущего дня
 
     // Считаем ключ дня: YYYYMMDD
     static long long dayKey(const tm& tm_time) {
@@ -211,6 +220,22 @@ struct MeanAgg {
     // Считаем ключ часа: YYYYMMDDHH
     static long long hourKey(const tm& tm_time) {
         return dayKey(tm_time) * 100LL + tm_time.tm_hour;
+    }
+
+    // Сброс и запись накопленных данных (вызывается при завершении программы)
+    void flush() {
+        if (hour_cnt > 0) {
+            TimeTemp hour_mean;
+            hour_mean.time = hour_start_time;
+            hour_mean.temp = hour_sum / hour_cnt;
+            appendRotate(TEMP_HOURLY_LOG, hour_mean, chrono::hours(24 * 30));
+        }
+        if (day_cnt > 0) {
+            TimeTemp day_mean;
+            day_mean.time = day_start_time;
+            day_mean.temp = day_sum / day_cnt;
+            appendKeepCurrentYear(TEMP_DAILY_LOG, day_mean);
+        }
     }
 
     // Добавляем одно измерение и при необходимости
@@ -233,10 +258,11 @@ struct MeanAgg {
         // первое измерение часа
         if (hour_key == -1) {
             hour_key = cur_hour;
+            hour_start_time = tt.time;
         } else if (cur_hour != hour_key && hour_cnt > 0) {
             // при смене часа считаем среднее за час
             TimeTemp hour_mean;
-            hour_mean.time = tt.time;
+            hour_mean.time = hour_start_time; // используем время начала периода
             hour_mean.temp = hour_sum / hour_cnt;
 
             // Пишем в лог средних по часу, храним только последний месяц
@@ -245,14 +271,16 @@ struct MeanAgg {
             hour_key = cur_hour;
             hour_sum = 0.0;
             hour_cnt = 0;
+            hour_start_time = tt.time;
         }
 
         // по аналогии делаем измерения дня
         if (day_key == -1) {
             day_key = cur_day;
+            day_start_time = tt.time;
         } else if (cur_day != day_key && day_cnt > 0) {
             TimeTemp day_mean;
-            day_mean.time = tt.time;
+            day_mean.time = day_start_time; // используем время начала периода
             day_mean.temp = day_sum / day_cnt;
 
             appendKeepCurrentYear(TEMP_DAILY_LOG, day_mean);
@@ -260,9 +288,10 @@ struct MeanAgg {
             day_key = cur_day;
             day_sum = 0.0;
             day_cnt = 0;
+            day_start_time = tt.time;
         }
 
-        // накапоиваем значение
+        // накапливаем значение
         hour_sum += tt.temp;
         hour_cnt++;
 
@@ -271,31 +300,59 @@ struct MeanAgg {
     }
 };
 
+// Глобальный указатель для обработки сигналов
+static MeanAgg* g_aggregator = nullptr;
+static volatile sig_atomic_t g_running = 1;
+
+void signalHandler(int signum) {
+    (void)signum;
+    g_running = 0;
+}
+
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         cerr << "Incorrect arguments number" << endl;
         cerr << "Usage example\n" <<
-                "Windows " << argv[0] << " COM4 9600\n" <<
-                "POSIX " << argv[0] << " dev/ttys003 9600\n";
+                "Windows: " << argv[0] << " COM4 9600\n" <<
+                "POSIX:   " << argv[0] << " /dev/ttys003 9600\n";
         return 1;
     }
 
     const string PORT = argv[1];
-    // Скорости в этом скрипте и запущенном симмуляторе python должны совпадать
-    const int BAUD = atoi(argv[2]);
 
-    // создание папки длля логов
+    // Безопасный парсинг baud rate
+    char* endptr = nullptr;
+    const long baud_long = strtol(argv[2], &endptr, 10);
+    if (endptr == argv[2] || *endptr != '\0' || baud_long <= 0 || baud_long > INT_MAX) {
+        cerr << "Invalid baud rate: " << argv[2] << endl;
+        return 1;
+    }
+    const int BAUD = static_cast<int>(baud_long);
+
+    // Устанавливаем C локаль для корректного парсинга чисел с точкой
+    setlocale(LC_NUMERIC, "C");
+
+    // создание папки для логов
     std::error_code ec;
     std::filesystem::create_directories("log", ec);
+    if (ec) {
+        cerr << "Warning: Failed to create log directory: " << ec.message() << endl;
+    }
+
+    // Устанавливаем обработчики сигналов для корректного завершения
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
 
     try {
         SerialPort port(PORT, BAUD);
         MeanAgg ma;
+        g_aggregator = &ma;
 
         cerr << "Opened port: " << PORT << " @ " << BAUD << "\n";
+        cerr << "Press Ctrl+C to stop and save accumulated data.\n";
 
-        while (true) {
+        while (g_running) {
             string line;
 
             if (!port.readline(line)) continue;
@@ -311,11 +368,15 @@ int main(int argc, char *argv[]) {
                 appendRotate(TEMP_LOG, tt, chrono::hours(24));
                 ma.add(tt);
 
-                cerr << "Read from port tempreture: " << temp << " C\n";
+                cerr << "Read from port temperature: " << temp << " C\n";
             } catch (...) {
                 cerr << "Invalid format line: '" << line << "'\n";
             }
         }
+
+        // Сохраняем накопленные данные перед выходом
+        ma.flush();
+        cerr << "Data saved successfully.\n";
 
     } catch (const exception &e) {
         cerr << e.what() << endl;

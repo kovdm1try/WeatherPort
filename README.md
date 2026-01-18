@@ -56,37 +56,77 @@ options:
   --interval INTERVAL  Интервал между обновлениями в секундах (по умолчанию 10)
 ```
 
-## Запуск логера
-```bash
-# Сборка проекта
-mkdir -p build
+## Сборка и запуск
+
+### Windows
+CMake(или MinGW)
+
+```cmd
+# Сборка
+mkdir build
 cd build
 cmake ..
-cmake --build .
+cmake --build . --config Release
 
 # Запуск
-./logger /dev/ttys002(порт) 9600(скорость)
+logger.exe COM3 9600
 ```
 
-## Запуск проекта целиком
-1) Запуск виртуальных портов(Если на POSIX)
-```bash
-socat -d -d pty,raw,echo=0 pty,raw,echo=0
+**Виртуальный порт:** используйте [com0com](https://sourceforge.net/projects/com0com/) для создания пары виртуальных COM-портов.
+
+```cmd
+# Запуск sender
+python sender.py --port COM4 --interval 30
+
+# Запуск logger (другой порт из пары)
+logger.exe COM3 9600
 ```
 
-2) Запуск sender для получения температуры
+### Linux
 ```bash
-source .venv/bin/activate
-python sender.py --interval 30 --port /dev/ttys003 --city Vladivostok # Пример аргументов
-```
+# Установка зависимостей (Debian/Ubuntu)
+sudo apt install cmake g++ socat
 
-3) Запуск логера
-```bash
-mkdir -p build
-cd build
+# Сборка
+mkdir -p build && cd build
 cmake ..
 cmake --build .
 
-# Запуск (Если через socat, то пишем второй, отличный от sender'а порт)
+# Создание виртуальных портов
+socat -d -d pty,raw,echo=0 pty,raw,echo=0
+# Вывод покажет созданные порты, например /dev/pts/2 и /dev/pts/3
+
+# Запуск sender (в отдельном терминале)
+python3 sender.py --port /dev/pts/3 --interval 30
+
+# Запуск logger
+./logger /dev/pts/2 9600
+```
+
+### macOS
+```bash
+# Установка socat
+brew install socat
+
+# Сборка
+mkdir -p build && cd build
+cmake ..
+cmake --build .
+
+# Создание виртуальных портов
+socat -d -d pty,raw,echo=0 pty,raw,echo=0
+# Вывод: /dev/ttys002 и /dev/ttys003
+
+# Запуск sender (в отдельном терминале)
+source .venv/bin/activate
+python sender.py --port /dev/ttys003 --interval 30
+
+# Запуск logger
 ./logger /dev/ttys002 9600
 ```
+
+## Логи
+
+- `log/tempreture.log` — все измерения за 24 часа
+- `log/tempreture_mean_hour.log` — средние за час (30 дней)
+- `log/tempreture_mean_day.log` — средние за день (текущий год)
