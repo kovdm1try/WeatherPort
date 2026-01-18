@@ -99,6 +99,12 @@ SerialPort::SerialPort(const string &port, int baud) {
             throw std::runtime_error("Unsupported baud value: " + std::to_string(baud));
     }
 
+    // Применяем скорость порта
+    if (cfsetispeed(&tio, speed) != 0 || cfsetospeed(&tio, speed) != 0) {
+        close(fid);
+        throw runtime_error("Failed to set baud rate");
+    }
+
     tio.c_cflag |= (CLOCAL | CREAD); // разрешаем чтение
 
     // Пытаемся установить аттрибуты на порт

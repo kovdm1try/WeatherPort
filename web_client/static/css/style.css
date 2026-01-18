@@ -1,0 +1,182 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5;
+    min-height: 100vh;
+    color: #333;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 30px;
+    color: #2563eb;
+    font-size: 2rem;
+}
+
+.current-temp {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    margin-bottom: 24px;
+    border: 1px solid #e5e5e5;
+}
+
+.current-temp h2 {
+    color: #666;
+    font-size: 1rem;
+    margin-bottom: 8px;
+}
+
+.temperature {
+    font-size: 4rem;
+    font-weight: bold;
+    color: #2563eb;
+}
+
+.last-update {
+    color: #888;
+    margin-top: 8px;
+    font-size: 0.85rem;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.stat-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+    border: 1px solid #e5e5e5;
+}
+
+.stat-card h3 {
+    color: #666;
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.stat-value.min { color: #3b82f6; }
+.stat-value.max { color: #ef4444; }
+.stat-value.avg { color: #8b5cf6; }
+.stat-value.count { color: #10b981; }
+
+.charts-container {
+    display: grid;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.chart-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #e5e5e5;
+}
+
+.chart-card h3 {
+    color: #333;
+    margin-bottom: 16px;
+    font-size: 1.1rem;
+}
+
+.chart-wrapper {
+    position: relative;
+    height: 280px;
+}
+
+.tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.tab-btn {
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    color: #555;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background 0.2s;
+}
+
+.tab-btn:hover {
+    background: #e5e5e5;
+}
+
+.tab-btn.active {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+}
+
+.table-container {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #e5e5e5;
+    overflow-x: auto;
+}
+
+.table-container h3 {
+    color: #333;
+    margin-bottom: 16px;
+    font-size: 1.1rem;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+th {
+    background: #f9f9f9;
+    color: #555;
+    font-weight: 600;
+}
+
+tr:hover {
+    background: #fafafa;
+}
+
+.loading {
+    text-align: center;
+    padding: 30px;
+    color: #888;
+}
+
+@media (max-width: 768px) {
+    h1 { font-size: 1.5rem; }
+    .temperature { font-size: 3rem; }
+    .stat-value { font-size: 1.25rem; }
+}

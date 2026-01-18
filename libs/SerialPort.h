@@ -2,7 +2,7 @@
 // Created by Дмитрий on 11/24/25.
 //
 
-#pragma once;
+#pragma once
 
 #ifndef SERIALPORT_H
 #define SERIALPORT_H

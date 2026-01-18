@@ -1,301 +1,563 @@
-#include <bits/stdc++.h>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <chrono>
+#include <iomanip>
+#include <ctime>
+#include <filesystem>
+#include <stdexcept>
+#include <csignal>
+#include <clocale>
+#include <cstdlib>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 #include "libs/SerialPort.h"
+#include "libs/httplib.h"
+#include <sqlite3.h>
 
 #ifdef _WIN32
     #include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#include <termios.h>
-#include <cerrno>
 #endif
 
 using namespace std;
 
-// Пути до фалов логов
-const string TEMP_LOG = "log/tempreture.log";
-const string TEMP_HOURLY_LOG = "log/tempreture_mean_hour.log";
-const string TEMP_DAILY_LOG = "log/tempreture_mean_day.log";
+const string DB_PATH = "log/weather.db";
 
-// Структура 1 записи в логах(время и температура)
+const int HTTP_PORT = 9847;
+
+static atomic<bool> g_running{true};
+static mutex g_db_mutex;
+static sqlite3* g_db = nullptr;
+static double g_current_temp = 0.0;
+static chrono::system_clock::time_point g_last_reading_time;
+static mutex g_temp_mutex;
+
+
 struct TimeTemp {
     chrono::system_clock::time_point time;
     double temp{};
 };
 
-// Преобразование time_point в строку вида DD/MM/YYYY HH:MM
-string TimePoint2Sting(const chrono::system_clock::time_point tp) {
+// преобразование time_point в строку вида YYYY/MM/DD HH:MM:SS
+string TimePoint2String(const chrono::system_clock::time_point tp) {
     time_t t = chrono::system_clock::to_time_t(tp);
-
-    // Structure holding a calendar date and time broken down into its components(https://en.cppreference.com/w/c/chrono/tm)
     tm tm{};
-
 #ifdef _WIN32
-        localtime_s(&tm, &t);
+    localtime_s(&tm, &t);
 #else
     localtime_r(&t, &tm);
 #endif
-
-    // Собираем строку DD:MM:YYYY HH:MM в поток ss с помощью метода put_time
     ostringstream oss;
     oss << put_time(&tm, "%Y/%m/%d %H:%M:%S");
-
     return oss.str();
 }
 
-/*
-params:
-    date: дата в формате "%Y/%m/%d %H:%M:%S"
-    tp: ссылка на переменну/ куда положим распаршенное значение time_point
- return:
-    bool: True если получилось распарсить, False - если не получилось
- */
-bool String2TimePoint(const string &date, chrono::system_clock::time_point &tp) {
-    tm tm{};
-    istringstream iss(date);
+// преобразование time_point в Unix timestamp
+long long TimePoint2Unix(const chrono::system_clock::time_point tp) {
+    return chrono::duration_cast<chrono::seconds>(tp.time_since_epoch()).count();
+}
 
-    iss >> get_time(&tm, "%Y/%m/%d %H:%M:%S");
-    if (iss.fail()) {
+// переобразование Unix timestamp в time_point
+chrono::system_clock::time_point Unix2TimePoint(long long ts) {
+    return chrono::system_clock::time_point(chrono::seconds(ts));
+}
+
+bool initDatabase() {
+    error_code ec;
+    filesystem::create_directories("log", ec);
+
+    int rc = sqlite3_open(DB_PATH.c_str(), &g_db);
+    if (rc != SQLITE_OK) {
+        cerr << "Cannot open database: " << sqlite3_errmsg(g_db) << endl;
         return false;
     }
 
-    time_t t = mktime(&tm);
-    if (t < 0) {
+    const char* sql = R"(
+        CREATE TABLE IF NOT EXISTS measurements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            temperature REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_measurements_ts ON measurements(timestamp);
+
+        CREATE TABLE IF NOT EXISTS hourly_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            avg_temp REAL NOT NULL,
+            count INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_hourly_ts ON hourly_stats(timestamp);
+
+        CREATE TABLE IF NOT EXISTS daily_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            avg_temp REAL NOT NULL,
+            count INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_ts ON daily_stats(timestamp);
+    )";
+
+    char* errMsg = nullptr;
+    rc = sqlite3_exec(g_db, sql, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK) {
+        cerr << "SQL error: " << errMsg << endl;
+        sqlite3_free(errMsg);
         return false;
     }
-    tp = chrono::system_clock::from_time_t(t);
+
     return true;
 }
 
+void insertMeasurement(long long timestamp, double temp) {
+    lock_guard<mutex> lock(g_db_mutex);
 
-/*
-params:
-    line: строка лога %Y/%m/%d %H:%M:%S|temp
-    tt: ссылка на переменную со структурой TimeTemp куда положим распаршенное значение
-return:
-    bool: True если получилось распарсить, False - если не получилось
- */
-bool parseLogLine(const string &line, TimeTemp &tt) {
-    const auto sep_pos = line.find('|');
+    const char* sql = "INSERT INTO measurements (timestamp, temperature) VALUES (?, ?)";
+    sqlite3_stmt* stmt;
 
-    // нет разделителя
-    if (sep_pos == string::npos) {
-        return false;
-    }
-
-    const string time_part = line.substr(0, sep_pos);
-    const string temp_part = line.substr(sep_pos + 1);
-
-    // Парсим время
-    chrono::system_clock::time_point tp;
-    if (!String2TimePoint(time_part, tp)) {
-        return false;
-    }
-
-    // Парсим температуру как double(stod -> return double)
-    try {
-        const double temp = stod(temp_part);
-        tt.time = tp;
-        tt.temp = temp;
-        return true;
-    } catch (...) {
-        return false;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, timestamp);
+        sqlite3_bind_double(stmt, 2, temp);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
     }
 }
 
-void appendRotate(const string& file_path,
-                  const TimeTemp& current,
-                  const chrono::hours& max_age)
-{
-/*
-appendRotate
-  Добавление записи в логи через промежуток времени.
-params:
-  file_path — путь к лог-файлу
-  current   — новая запись
-  max_age   — максимальный возраст записей (в часах),
-              всё что старше — выкидывается
-return:
-    void
-*/
-    vector<TimeTemp> keep; // то что оставляем
-    const auto now = chrono::system_clock::now();
-    const auto min_time = now - max_age;
+void insertHourlyStat(long long timestamp, double avg_temp, int count) {
+    lock_guard<mutex> lock(g_db_mutex);
 
-    // Читаем старый лог, оставляем только то что попадает в диапозон
-    ifstream fin(file_path);
-    if (fin) {
-        string line;
-        while (getline(fin, line)) {
-            TimeTemp tt;
-            if (!parseLogLine(line, tt)) continue;
-            if (tt.time >= min_time) {
-                keep.push_back(tt);
-            }
-        }
-    }
+    const char* sql = "INSERT INTO hourly_stats (timestamp, avg_temp, count) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
 
-    keep.push_back(current);
-
-    // перезаписываем файл
-    ofstream fout(file_path, ios::trunc);
-    for (const auto& tt : keep) {
-        fout << TimePoint2Sting(tt.time) << '|' << tt.temp << '\n';
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, timestamp);
+        sqlite3_bind_double(stmt, 2, avg_temp);
+        sqlite3_bind_int(stmt, 3, count);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
     }
 }
 
-// Средние дневные логи, хранятся год
-void appendKeepCurrentYear(const string& file_path, const TimeTemp& current) {
-    vector<TimeTemp> keep;
+void insertDailyStat(long long timestamp, double avg_temp, int count) {
+    lock_guard<mutex> lock(g_db_mutex);
 
-    // Текущий год
-    const auto now = chrono::system_clock::now();
+    const char* sql = "INSERT INTO daily_stats (timestamp, avg_temp, count) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, timestamp);
+        sqlite3_bind_double(stmt, 2, avg_temp);
+        sqlite3_bind_int(stmt, 3, count);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+}
+
+// удаление измерений
+void cleanupOldMeasurements() {
+    lock_guard<mutex> lock(g_db_mutex);
+
+    auto cutoff = chrono::system_clock::now() - chrono::hours(24);
+    long long cutoff_ts = TimePoint2Unix(cutoff);
+
+    const char* sql = "DELETE FROM measurements WHERE timestamp < ?";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, cutoff_ts);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+}
+
+void cleanupOldHourlyStats() {
+    lock_guard<mutex> lock(g_db_mutex);
+
+    auto cutoff = chrono::system_clock::now() - chrono::hours(24 * 30);
+    long long cutoff_ts = TimePoint2Unix(cutoff);
+
+    const char* sql = "DELETE FROM hourly_stats WHERE timestamp < ?";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, cutoff_ts);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+}
+
+void cleanupOldDailyStats() {
+    lock_guard<mutex> lock(g_db_mutex);
+
+    auto now = chrono::system_clock::now();
     time_t t_now = chrono::system_clock::to_time_t(now);
     tm tm_now{};
-    #ifdef _WIN32
-        localtime_s(&tm_now, &t_now);
-    #else
-        localtime_r(&t_now, &tm_now);
-    #endif
-    const int cur_year = tm_now.tm_year + 1900;
+#ifdef _WIN32
+    localtime_s(&tm_now, &t_now);
+#else
+    localtime_r(&t_now, &tm_now);
+#endif
 
-    // Читаем старые записи и оставляем только за текщий год
-    ifstream fin(file_path);
-    if (fin) {
-        string line;
-        while (getline(fin, line)) {
-            TimeTemp tt;
-            if (!parseLogLine(line, tt)) continue;
+    tm tm_year_start = {0, 0, 0, 1, 0, tm_now.tm_year, 0, 0, -1};
+    time_t year_start = mktime(&tm_year_start);
 
-            time_t t = chrono::system_clock::to_time_t(tt.time);
-            tm tm_entry{};
-    #ifdef _WIN32
-                localtime_s(&tm_entry, &t);
-    #else
-                localtime_r(&t, &tm_entry);
-    #endif
-            const int y = tm_entry.tm_year + 1900;
-            if (y == cur_year) {
-                keep.push_back(tt);
-            }
-        }
-    }
+    const char* sql = "DELETE FROM daily_stats WHERE timestamp < ?";
+    sqlite3_stmt* stmt;
 
-    keep.push_back(current);
-
-    // Перезаписываем файл
-    ofstream fout(file_path, ios::trunc);
-    for (const auto& tt : keep) {
-        fout << TimePoint2Sting(tt.time) << '|' << tt.temp << '\n';
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<long long>(year_start));
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
     }
 }
 
 // Агрегатор средних значений
 struct MeanAgg {
-    long long hour_key = -1; // к какому часу приндлежат измерения
-    double hour_sum = 0.0; // сумма температуры
-    long long hour_cnt = 0; // количество измерений
+    long long hour_key = -1;
+    double hour_sum = 0.0;
+    long long hour_cnt = 0;
+    chrono::system_clock::time_point hour_start_time;
 
-    long long day_key  = -1; // к какому дню принадлежат измерения
-    double day_sum  = 0.0; // сумма температуры
-    long long day_cnt  = 0; // количесво измерений
+    long long day_key = -1;
+    double day_sum = 0.0;
+    long long day_cnt = 0;
+    chrono::system_clock::time_point day_start_time;
 
-    // Считаем ключ дня: YYYYMMDD
     static long long dayKey(const tm& tm_time) {
         return (tm_time.tm_year + 1900) * 10000LL
-             + (tm_time.tm_mon + 1)   * 100LL
+             + (tm_time.tm_mon + 1) * 100LL
              + tm_time.tm_mday;
     }
 
-    // Считаем ключ часа: YYYYMMDDHH
     static long long hourKey(const tm& tm_time) {
         return dayKey(tm_time) * 100LL + tm_time.tm_hour;
     }
 
-    // Добавляем одно измерение и при необходимости
-    // пишем средние значения за завершившийся час / день
+    void flush() {
+        if (hour_cnt > 0) {
+            insertHourlyStat(TimePoint2Unix(hour_start_time),
+                           hour_sum / hour_cnt,
+                           static_cast<int>(hour_cnt));
+        }
+        if (day_cnt > 0) {
+            insertDailyStat(TimePoint2Unix(day_start_time),
+                          day_sum / day_cnt,
+                          static_cast<int>(day_cnt));
+        }
+    }
+
     void add(const TimeTemp& tt) {
-        using namespace chrono;
-
-        // Переводим время измерения в локальное tm
-        time_t t = system_clock::to_time_t(tt.time);
+        time_t t = chrono::system_clock::to_time_t(tt.time);
         tm tm_entry{};
-        #ifdef _WIN32
-            localtime_s(&tm_entry, &t);
-        #else
-            localtime_r(&t, &tm_entry);
-        #endif
+#ifdef _WIN32
+        localtime_s(&tm_entry, &t);
+#else
+        localtime_r(&t, &tm_entry);
+#endif
 
-        const long long cur_day  = dayKey(tm_entry);
+        const long long cur_day = dayKey(tm_entry);
         const long long cur_hour = hourKey(tm_entry);
 
-        // первое измерение часа
         if (hour_key == -1) {
             hour_key = cur_hour;
+            hour_start_time = tt.time;
         } else if (cur_hour != hour_key && hour_cnt > 0) {
-            // при смене часа считаем среднее за час
-            TimeTemp hour_mean;
-            hour_mean.time = tt.time;
-            hour_mean.temp = hour_sum / hour_cnt;
-
-            // Пишем в лог средних по часу, храним только последний месяц
-            appendRotate(TEMP_HOURLY_LOG, hour_mean, chrono::hours(24 * 30));
+            insertHourlyStat(TimePoint2Unix(hour_start_time),
+                           hour_sum / hour_cnt,
+                           static_cast<int>(hour_cnt));
 
             hour_key = cur_hour;
             hour_sum = 0.0;
             hour_cnt = 0;
+            hour_start_time = tt.time;
         }
 
-        // по аналогии делаем измерения дня
         if (day_key == -1) {
             day_key = cur_day;
+            day_start_time = tt.time;
         } else if (cur_day != day_key && day_cnt > 0) {
-            TimeTemp day_mean;
-            day_mean.time = tt.time;
-            day_mean.temp = day_sum / day_cnt;
-
-            appendKeepCurrentYear(TEMP_DAILY_LOG, day_mean);
+            insertDailyStat(TimePoint2Unix(day_start_time),
+                          day_sum / day_cnt,
+                          static_cast<int>(day_cnt));
 
             day_key = cur_day;
             day_sum = 0.0;
             day_cnt = 0;
+            day_start_time = tt.time;
         }
 
-        // накапоиваем значение
         hour_sum += tt.temp;
         hour_cnt++;
-
         day_sum += tt.temp;
         day_cnt++;
     }
 };
 
+static MeanAgg* g_aggregator = nullptr;
+
+void signalHandler(int signum) {
+    (void)signum;
+    g_running = false;
+}
+
+string escapeJson(const string& s) {
+    string result;
+    for (char c : s) {
+        switch (c) {
+            case '"': result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default: result += c;
+        }
+    }
+    return result;
+}
+
+void runHttpServer() {
+    httplib::Server svr;
+    auto setCorsHeaders = [](httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type");
+    };
+
+    svr.Get("/api/current", [&setCorsHeaders](const httplib::Request&, httplib::Response& res) {
+        setCorsHeaders(res);
+
+        double temp;
+        long long ts;
+        {
+            lock_guard<mutex> lock(g_temp_mutex);
+            temp = g_current_temp;
+            ts = TimePoint2Unix(g_last_reading_time);
+        }
+
+        ostringstream json;
+        json << fixed << setprecision(2);
+        json << "{\"temperature\":" << temp << ",\"timestamp\":" << ts << "}";
+
+        res.set_content(json.str(), "application/json");
+    });
+
+    svr.Get("/api/measurements", [&setCorsHeaders](const httplib::Request& req, httplib::Response& res) {
+        setCorsHeaders(res);
+
+        int hours = 24;
+        if (req.has_param("hours")) {
+            hours = static_cast<int>(strtol(req.get_param_value("hours").c_str(), nullptr, 10));
+        }
+
+        auto cutoff = chrono::system_clock::now() - chrono::hours(hours);
+        long long cutoff_ts = TimePoint2Unix(cutoff);
+
+        ostringstream json;
+        json << fixed << setprecision(2);
+        json << "[";
+
+        {
+            lock_guard<mutex> lock(g_db_mutex);
+
+            const char* sql = "SELECT timestamp, temperature FROM measurements WHERE timestamp >= ? ORDER BY timestamp ASC";
+            sqlite3_stmt* stmt;
+
+            bool first = true;
+            if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(stmt, 1, cutoff_ts);
+
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    if (!first) json << ",";
+                    first = false;
+
+                    long long ts = sqlite3_column_int64(stmt, 0);
+                    double temp = sqlite3_column_double(stmt, 1);
+                    json << "{\"timestamp\":" << ts << ",\"temperature\":" << temp << "}";
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+
+        json << "]";
+        res.set_content(json.str(), "application/json");
+    });
+
+    svr.Get("/api/hourly", [&setCorsHeaders](const httplib::Request& req, httplib::Response& res) {
+        setCorsHeaders(res);
+
+        int days = 7;
+        if (req.has_param("days")) {
+            days = static_cast<int>(strtol(req.get_param_value("days").c_str(), nullptr, 10));
+        }
+
+        auto cutoff = chrono::system_clock::now() - chrono::hours(24 * days);
+        long long cutoff_ts = TimePoint2Unix(cutoff);
+
+        ostringstream json;
+        json << fixed << setprecision(2);
+        json << "[";
+
+        {
+            lock_guard<mutex> lock(g_db_mutex);
+
+            const char* sql = "SELECT timestamp, avg_temp, count FROM hourly_stats WHERE timestamp >= ? ORDER BY timestamp ASC";
+            sqlite3_stmt* stmt;
+
+            bool first = true;
+            if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(stmt, 1, cutoff_ts);
+
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    if (!first) json << ",";
+                    first = false;
+
+                    long long ts = sqlite3_column_int64(stmt, 0);
+                    double temp = sqlite3_column_double(stmt, 1);
+                    int count = sqlite3_column_int(stmt, 2);
+                    json << "{\"timestamp\":" << ts << ",\"avg_temp\":" << temp << ",\"count\":" << count << "}";
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+
+        json << "]";
+        res.set_content(json.str(), "application/json");
+    });
+
+    svr.Get("/api/daily", [&setCorsHeaders](const httplib::Request& req, httplib::Response& res) {
+        setCorsHeaders(res);
+
+        int days = 30;
+        if (req.has_param("days")) {
+            days = static_cast<int>(strtol(req.get_param_value("days").c_str(), nullptr, 10));
+        }
+
+        auto cutoff = chrono::system_clock::now() - chrono::hours(24 * days);
+        long long cutoff_ts = TimePoint2Unix(cutoff);
+
+        ostringstream json;
+        json << fixed << setprecision(2);
+        json << "[";
+
+        {
+            lock_guard<mutex> lock(g_db_mutex);
+
+            const char* sql = "SELECT timestamp, avg_temp, count FROM daily_stats WHERE timestamp >= ? ORDER BY timestamp ASC";
+            sqlite3_stmt* stmt;
+
+            bool first = true;
+            if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(stmt, 1, cutoff_ts);
+
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    if (!first) json << ",";
+                    first = false;
+
+                    long long ts = sqlite3_column_int64(stmt, 0);
+                    double temp = sqlite3_column_double(stmt, 1);
+                    int count = sqlite3_column_int(stmt, 2);
+                    json << "{\"timestamp\":" << ts << ",\"avg_temp\":" << temp << ",\"count\":" << count << "}";
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+
+        json << "]";
+        res.set_content(json.str(), "application/json");
+    });
+
+    svr.Get("/api/stats", [&setCorsHeaders](const httplib::Request&, httplib::Response& res) {
+        setCorsHeaders(res);
+
+        ostringstream json;
+        json << fixed << setprecision(2);
+
+        {
+            lock_guard<mutex> lock(g_db_mutex);
+
+            double min_temp = 0, max_temp = 0, avg_temp = 0;
+            int count = 0;
+
+            const char* sql = "SELECT MIN(temperature), MAX(temperature), AVG(temperature), COUNT(*) FROM measurements";
+            sqlite3_stmt* stmt;
+
+            if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    min_temp = sqlite3_column_double(stmt, 0);
+                    max_temp = sqlite3_column_double(stmt, 1);
+                    avg_temp = sqlite3_column_double(stmt, 2);
+                    count = sqlite3_column_int(stmt, 3);
+                }
+                sqlite3_finalize(stmt);
+            }
+
+            json << "{\"min\":" << min_temp
+                 << ",\"max\":" << max_temp
+                 << ",\"avg\":" << avg_temp
+                 << ",\"count\":" << count << "}";
+        }
+
+        res.set_content(json.str(), "application/json");
+    });
+
+    svr.Options(".*", [&setCorsHeaders](const httplib::Request&, httplib::Response& res) {
+        setCorsHeaders(res);
+        res.set_content("", "text/plain");
+    });
+
+    cerr << "HTTP server starting on port " << HTTP_PORT << endl;
+    svr.listen("0.0.0.0", HTTP_PORT);
+}
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         cerr << "Incorrect arguments number" << endl;
         cerr << "Usage example\n" <<
-                "Windows " << argv[0] << " COM4 9600\n" <<
-                "POSIX " << argv[0] << " dev/ttys003 9600\n";
+                "Windows: " << argv[0] << " COM4 9600\n" <<
+                "POSIX:   " << argv[0] << " /dev/ttys003 9600\n";
         return 1;
     }
 
     const string PORT = argv[1];
-    // Скорости в этом скрипте и запущенном симмуляторе python должны совпадать
-    const int BAUD = atoi(argv[2]);
 
-    // создание папки длля логов
-    std::error_code ec;
-    std::filesystem::create_directories("log", ec);
+    char* endptr = nullptr;
+    const long baud_long = strtol(argv[2], &endptr, 10);
+    if (endptr == argv[2] || *endptr != '\0' || baud_long <= 0 || baud_long > INT_MAX) {
+        cerr << "Invalid baud rate: " << argv[2] << endl;
+        return 1;
+    }
+    const int BAUD = static_cast<int>(baud_long);
+
+    setlocale(LC_NUMERIC, "C");
+
+    if (!initDatabase()) {
+        cerr << "Failed to initialize database" << endl;
+        return 1;
+    }
+
+    cleanupOldMeasurements();
+    cleanupOldHourlyStats();
+    cleanupOldDailyStats();
+
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+
+    thread httpThread(runHttpServer);
+    httpThread.detach();
 
     try {
         SerialPort port(PORT, BAUD);
         MeanAgg ma;
+        g_aggregator = &ma;
 
         cerr << "Opened port: " << PORT << " @ " << BAUD << "\n";
+        cerr << "HTTP server running at http://localhost:" << HTTP_PORT << "\n";
+        cerr << "Press Ctrl+C to stop and save data.\n";
 
-        while (true) {
+        while (g_running) {
             string line;
 
             if (!port.readline(line)) continue;
@@ -308,18 +570,31 @@ int main(int argc, char *argv[]) {
                 tt.time = chrono::system_clock::now();
                 tt.temp = temp;
 
-                appendRotate(TEMP_LOG, tt, chrono::hours(24));
+                insertMeasurement(TimePoint2Unix(tt.time), temp);
+
+                {
+                    lock_guard<mutex> lock(g_temp_mutex);
+                    g_current_temp = temp;
+                    g_last_reading_time = tt.time;
+                }
+
                 ma.add(tt);
 
-                cerr << "Read from port tempreture: " << temp << " C\n";
+                cerr << "Read from port temperature: " << temp << " C\n";
             } catch (...) {
                 cerr << "Invalid format line: '" << line << "'\n";
             }
         }
 
+        ma.flush();
+        cerr << "Data saved.\n";
+
     } catch (const exception &e) {
         cerr << e.what() << endl;
+        if (g_db) sqlite3_close(g_db);
         return 1;
     }
+
+    if (g_db) sqlite3_close(g_db);
     return 0;
 }
