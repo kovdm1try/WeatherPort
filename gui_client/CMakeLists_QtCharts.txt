@@ -1,0 +1,50 @@
+# Альтернативный CMakeLists.txt для использования QtCharts вместо Qwt
+# Переименуйте этот файл в CMakeLists.txt если не хотите использовать Qwt
+
+cmake_minimum_required(VERSION 3.16)
+project(WeatherGUI VERSION 1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+# Find Qt6 or Qt5
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Charts)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network Charts)
+
+# Source files
+set(SOURCES
+    main.cpp
+    mainwindow_qtcharts.cpp
+    apiclient.cpp
+)
+
+set(HEADERS
+    mainwindow_qtcharts.h
+    apiclient.h
+)
+
+# Create executable
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+
+# Link libraries
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
+    Qt${QT_VERSION_MAJOR}::Charts
+)
+
+# macOS specific
+if(APPLE)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_GUI_IDENTIFIER com.weatherport.gui
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+    )
+endif()
+
+message(STATUS "Qt version: ${QT_VERSION_MAJOR}.${Qt${QT_VERSION_MAJOR}_VERSION}")
+message(STATUS "Using QtCharts for plotting")
