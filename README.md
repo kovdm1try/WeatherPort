@@ -2,7 +2,7 @@
 
 ## Задание
 
-### Лабораторная работа 1
+### Лабораторная работа 4
 ```
 Есть устройство, которое публикует по серийному порту или интерфейсу USB
 текущую температуру окружающей среды. Необходимо написать на C\C++ кроссплатформенную программу,
@@ -14,13 +14,20 @@
 информацию за текущий год.
 ```
 
-### Лабораторная работа 2
+### Лабораторная работа 5
 ```
 В программу, выполненную в ходе предыдущего задания, добавить функционал сетевого сервера
 с возможностью публиковать по HTTP-запросу текущую температуру, а также статистику за выбранный
 период времени. Добавить функционал сохранения логов в базу данных вместо файлов.
 Написать для своего сервера клиентское веб-приложение на любом языке программирования
 (C/C++ + HTML + CGI, PHP, Python, Java...), отображающее данные в наглядном виде (таблицы или графики).
+```
+
+### Лабораторная работа 6
+```
+Разработать для ранее созданного сервера приложение c GUI на С\С++, отображающее данные по
+текущей температуре и средней температуре за выбранный период времени в наглядном виде.
+Для построения графиков допускается использовать библиотеку QWT.
 ```
 
 ## Структура проекта
@@ -35,6 +42,15 @@ WeatherPort/
 │   ├── templates/
 │   │   └── index.html           # HTML страница с графиками (Chart.js)
 │   └── requirements.txt         # Python зависимости для веб-клиента
+├── gui_client/                  # GUI клиент (Qt + Qwt/QtCharts)
+│   ├── CMakeLists.txt           # Конфигурация сборки
+│   ├── main.cpp                 # Точка входа
+│   ├── mainwindow.h/.cpp        # Главное окно (версия с Qwt)
+│   ├── temperaturechart.h/.cpp  # Виджет графика (Qwt)
+│   ├── mainwindow_qtcharts.h/.cpp # Главное окно (версия с QtCharts)
+│   ├── apiclient.h/.cpp         # HTTP клиент для API сервера
+│   ├── build.sh                 # Скрипт сборки
+│   └── README.md                # Документация GUI клиента
 ├── log/                         # Папка с данными (создается автоматически)
 │   └── weather.db               # SQLite база данных
 ├── sender.py                    # Python эмулятор устройства температуры
@@ -44,7 +60,7 @@ WeatherPort/
 └── README.md                    # Документация
 ```
 
-## Архитектура (Лабораторная 2)
+## Архитектура
 
 ### C++ Сервер (main.cpp)
 - Чтение температуры с последовательного порта
@@ -78,8 +94,11 @@ WeatherPort/
 ### macOS
 
 ```bash
-# Установка зависимостей
+# Установка зависимостей для сервера
 brew install socat sqlite3
+
+# Установка зависимостей для GUI
+brew install qt@6 qwt
 
 # Сборка
 mkdir -p build && cd build
@@ -101,6 +120,11 @@ python sender.py --port /dev/ttys003 --interval 10
 cd web_client
 pip install -r requirements.txt
 python app.py
+
+# Терминал 4: Сборка и запуск GUI 
+cd gui_client
+./build.sh
+./build/WeatherGUI.app/Contents/MacOS/WeatherGUI
 ```
 
 ### Linux
@@ -108,6 +132,9 @@ python app.py
 ```bash
 # Установка зависимостей (Debian/Ubuntu)
 sudo apt install cmake g++ socat libsqlite3-dev python3-pip
+
+# Для GUI
+sudo apt install qt6-base-dev qt6-charts-dev libqwt-qt6-dev
 
 # Сборка
 mkdir -p build && cd build
@@ -119,6 +146,13 @@ socat -d -d pty,raw,echo=0 pty,raw,echo=0
 # Вывод: /dev/pts/2 и /dev/pts/3
 
 # Запуск аналогичен macOS
+
+# Сборка GUI
+cd gui_client
+mkdir build && cd build
+cmake ..
+cmake --build .
+./WeatherGUI
 ```
 
 ### Windows
